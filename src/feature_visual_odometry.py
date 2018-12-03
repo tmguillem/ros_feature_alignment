@@ -14,7 +14,7 @@ from feature_visual_odometry.match_geometric_filters import HistogramLogicFilter
 from feature_visual_odometry.utils import knn_match_filter
 from feature_visual_odometry.image_manager import ImageManager
 
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CameraInfo, CompressedImage
 
 
 ############################################
@@ -38,10 +38,10 @@ class AlignmentParameters:
 
 class VisualOdometry:
     def __init__(self, parameters):
-        rospy.logwarn("Created visual odometry calculator")
         self.parameters = parameters
         self.images = np.array([ImageManager(), ImageManager()])
         self.bridge = CvBridge()
+        self.camera_K = None
 
         # Initiate the feature detector
         if parameters.feature_extractor == 'SURF':
@@ -61,9 +61,12 @@ class VisualOdometry:
         # image2 = self.bridge.cv2_to_imgmsg(aux_image_manager.image)
         # self.save_image_and_trigger_vo(image2)
 
+    def save_camera_calibration(self, data):
+        self.camera_K = data.K
+
     def save_image_and_trigger_vo(self, data):
 
-        cv_image = self.bridge.imgmsg_to_cv2(data)
+        cv_image = self.bridge.compressed_imgmsg_to_cv2(data)
 
         # Read new image, extract features, and flip vector to place it in the first position
         self.images[1].load_image(cv_image)
@@ -131,12 +134,6 @@ class VisualOdometry:
             else:
                 good_matches = matches
 
-            start = time.time()
-            h_matrix = RansacFilter.ransac_homography(train_image.keypoints, query_image.keypoints,
-                                                      good_matches, processed_data_plotter, parameters.plot_images)
-            end = time.time()
-            rospy.logwarn("TIME: RANSAC homography done. Elapsed time: %s", end - start)
-
             # Filter histograms by gaussian function fitting
             start = time.time()
             histogram_filter.fit_gaussian(good_matches, train_image.keypoints,
@@ -179,6 +176,25 @@ class VisualOdometry:
                 displacement_x[match_index] = dist[0]
                 displacement_y[match_index] = dist[1]
 
+            try:
+                start = time.time()
+                h_matrix = RansacFilter.ransac_homography(train_image.keypoints, query_image.keypoints,
+                                                          good_matches, processed_data_plotter, parameters.plot_images)
+
+                n_solutions = cv2.decomposeHomographyMat(h_matrix, self.camera_K)
+
+                end = time.time()
+                rospy.logwarn("TIME: RANSAC homography done. Elapsed time: %s", end - start)
+
+                rot_mat = n_solutions[1]
+                trans_mat = n_solutions[2]
+
+                # rospy.logwarn(rot_mat)
+                # rospy.logwarn(trans_mat)
+
+            except Exception:
+                rospy.logwarn("Not enough matches for RANSAC homography")
+
 
 def define_parameters():
     parameters = AlignmentParameters()
@@ -191,8 +207,8 @@ def define_parameters():
     parameters.knn_neighbors = 2
 
     # Image shrink factors in both dimensions
-    parameters.shrink_x_ratio = 1 / 8
-    parameters.shrink_y_ratio = 1 / 8
+    parameters.shrink_x_ratio = 1 / 2
+    parameters.shrink_y_ratio = 1 / 2
 
     parameters.plot_images = True
 
@@ -212,8 +228,8 @@ def call_save_image(data, vo_object):
     vo_object.save_image_and_trigger_vo(data)
 
 
-def listener(vo_object):
-    rospy.Subscriber("/image_vo_topic", Image, call_save_image, vo_object, queue_size=2)
+def call_save_camera_calibration(data, vo_object):
+    vo_object.save_camera_calibration(data)
 
 
 if __name__ == '__main__':
@@ -223,7 +239,10 @@ if __name__ == '__main__':
         input_parameters = define_parameters()
 
         visual_odometry = VisualOdometry(input_parameters)
-        listener(visual_odometry)
+        rospy.Subscriber("/maserati/camera_node/image/compressed", CompressedImage, call_save_image, visual_odometry,
+                         queue_size=2)
+        camera_info_sub = rospy.Subscriber("/maserati/camera_node/camera_info", CameraInfo,
+                                           call_save_camera_calibration, visual_odometry)
 
     except rospy.ROSInterruptException:
         pass
