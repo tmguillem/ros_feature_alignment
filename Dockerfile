@@ -5,7 +5,9 @@ RUN [ "cross-build-start" ]
 RUN apt-get update && \
     pip install -r requirements.txt
 
-RUN [ "cross-build-end" ]
+ENV READTHEDOCS True
 
-COPY Images/. /feature_matching/Images/.
-COPY python_scripts/. /feature_matching/python_scripts/.
+RUN mkdir /home/software/catkin_ws/src/feature_alignment
+COPY . /home/software/catkin_ws/src/feature_alignment/
+
+RUN [ "cross-build-end" ]
