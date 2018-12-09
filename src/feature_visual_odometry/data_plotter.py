@@ -77,6 +77,21 @@ class DataPlotter:
         plt.title('Length distribution')
         plt.show()
 
+    def plot_point_correspondances(self, train_pts, query_pts):
+        img1 = self.train_image_manager.image
+        img2 = self.query_image_manager.image
+
+        plt.figure()
+        appended_pixels = img2.shape[0:2]
+        plt.imshow(np.append(img1, img2, axis=1))
+        for i in range(0, len(train_pts)):
+            try:
+                plt.plot([train_pts[i][0], query_pts[i][0] + appended_pixels[1]], [train_pts[i][1], query_pts[i][1]],
+                         'o-', markerfacecolor='none')
+            except Exception as e:
+                rospy.logerr(e)
+        plt.show()
+
     def plot_query_bounding_box(self, bounding_box):
         """
         Plots the position of query image in train image based on the found matches

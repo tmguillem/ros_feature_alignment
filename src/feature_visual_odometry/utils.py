@@ -1,4 +1,5 @@
 import numpy as np
+import math
 
 
 # Gaussian function model to filter out unwanted matches during SURF registration
@@ -113,3 +114,42 @@ def knn_match_filter(knn_matches, knn_weight):
             match_in_range.append(knn_match[good_match_index])
 
     return match_in_range
+
+
+def is_rotation_matrix(r_mat):
+    """
+    # Checks if a matrix is a valid rotation matrix (i.e. its determinant is 1)
+
+    :param r_mat: 3x3 candidate rotation matrix
+    :return: whether or not the rotation matrix is valid
+    :rtype: bool
+    """
+    r_mat_transpose = np.transpose(r_mat)
+    identity_candidate = np.dot(r_mat_transpose, r_mat)
+    n = np.linalg.norm(np.identity(3, dtype=r_mat.dtype) - identity_candidate)
+    return n < 1e-6
+
+
+def rotation_matrix_to_euler_angles(r_mat):
+    """
+    Converts a rotation matrix into euler angles if rotation is not singular
+
+    :param r_mat: 3x3 rotation matrix
+    :return: 1x3 vector of euler angles
+    """
+    assert (is_rotation_matrix(r_mat))
+
+    sy = math.sqrt(r_mat[0, 0] * r_mat[0, 0] + r_mat[1, 0] * r_mat[1, 0])
+
+    singular = sy < 1e-6
+
+    if not singular:
+        x = math.atan2(r_mat[2, 1], r_mat[2, 2])
+        y = math.atan2(-r_mat[2, 0], sy)
+        z = math.atan2(r_mat[1, 0], r_mat[0, 0])
+    else:
+        x = math.atan2(-r_mat[1, 2], r_mat[1, 1])
+        y = math.atan2(-r_mat[2, 0], sy)
+        z = 0
+
+    return np.array([x, y, z])

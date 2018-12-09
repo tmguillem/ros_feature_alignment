@@ -46,10 +46,10 @@ class HistogramLogicFilter:
             self.angle_fitness = self.angle_histogram.area_under_curve / rectifier(self.angle_histogram.fano_factor)
             self.length_fitness = self.length_histogram.area_under_curve / rectifier(self.length_histogram.fano_factor)
 
-            print("Fano factors: angle = ", self.angle_histogram.fano_factor, "  length = ",
-                  self.length_histogram.fano_factor)
-            print("Total fitness: ", self.angle_fitness + self.length_fitness, " Split attributes: angle = ",
-                  self.angle_fitness, "  length = ", self.length_fitness)
+            # print("Fano factors: angle = ", self.angle_histogram.fano_factor, "  length = ",
+            #       self.length_histogram.fano_factor)
+            # print("Total fitness: ", self.angle_fitness + self.length_fitness, " Split attributes: angle = ",
+            #       self.angle_fitness, "  length = ", self.length_fitness)
 
     def save_configuration(self):
         self.saved_configuration = MatchData(self.match_vector, self.angle_histogram, self.length_histogram)

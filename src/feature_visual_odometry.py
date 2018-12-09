@@ -6,16 +6,18 @@ import time
 import cv2
 import numpy as np
 import rospy
+import tf2_ros as tf2
+import tf.transformations
 
 from cv_bridge import CvBridge
 
 from feature_visual_odometry.data_plotter import DataPlotter
 from feature_visual_odometry.match_geometric_filters import HistogramLogicFilter, RansacFilter
-from feature_visual_odometry.utils import knn_match_filter
+from feature_visual_odometry.utils import knn_match_filter, rotation_matrix_to_euler_angles
 from feature_visual_odometry.image_manager import ImageManager
 
 from sensor_msgs.msg import CameraInfo, CompressedImage
-
+from geometry_msgs.msg import Vector3, Quaternion, PoseStamped, TransformStamped
 
 ############################################
 #              HYPERPARAMETERS             #
@@ -42,30 +44,35 @@ class VisualOdometry:
         self.images = np.array([ImageManager(), ImageManager()])
         self.bridge = CvBridge()
         self.camera_K = None
+        self.publisher = rospy.Publisher("visual_odometry_pose", PoseStamped, queue_size=2)
+        self.transform_broadcaster = tf2.TransformBroadcaster()
+
+        self.stacked_position = Vector3(0, 0, 0)
+        self.stacked_rotation = tf.transformations.quaternion_from_euler(0, 0, 0)
 
         # Initiate the feature detector
         if parameters.feature_extractor == 'SURF':
             self.cv2_detector = cv2.xfeatures2d.SURF_create()
         elif parameters.feature_extractor == 'ORB':
-            self.cv2_detector = cv2.ORB_create()
+            self.cv2_detector = cv2.ORB_create(nfeatures=100)
         else:
             self.cv2_detector = cv2.xfeatures2d.SIFT_create()
 
         # aux_image_manager = ImageManager()
         # aux_image_manager.read_image(
         #     '/home/guillem/Documents/feature_alignment/catkin_ws/src/image_provider/Images/IMG_0568.JPG')
-        # image1 = self.bridge.cv2_to_imgmsg(aux_image_manager.image)
+        # image1 = self.bridge.cv2_to_compressed_imgmsg(aux_image_manager.image)
         # self.save_image_and_trigger_vo(image1)
         # aux_image_manager.read_image(
         #     '/home/guillem/Documents/feature_alignment/catkin_ws/src/image_provider/Images/IMG_0570.JPG')
-        # image2 = self.bridge.cv2_to_imgmsg(aux_image_manager.image)
+        # image2 = self.bridge.cv2_to_compressed_imgmsg(aux_image_manager.image)
         # self.save_image_and_trigger_vo(image2)
 
     def save_camera_calibration(self, data):
-        self.camera_K = data.K
+        self.camera_K = np.resize(data.K, [3, 3])
 
     def save_image_and_trigger_vo(self, data):
-
+        start = time.time()
         cv_image = self.bridge.compressed_imgmsg_to_cv2(data)
 
         # Read new image, extract features, and flip vector to place it in the first position
@@ -75,6 +82,9 @@ class VisualOdometry:
 
         if self.images[1].height > 0:
             self.visual_odometry_core()
+
+        rospy.logwarn("TIME: Total time: %s", time.time() - start)
+        rospy.logwarn("===================================================")
 
     def extract_image_features(self, image):
         parameters = self.parameters
@@ -88,14 +98,15 @@ class VisualOdometry:
         # Find the key points and descriptors for train image
         start = time.time()
         image.find_keypoints(self.cv2_detector)
+        rospy.logwarn("Number or keypoints: %s", len(image.keypoints))
         end = time.time()
         rospy.logwarn("TIME: Extract features of image. Elapsed time: %s", end - start)
 
     def visual_odometry_core(self):
 
         parameters = self.parameters
-        train_image = self.images[0]
-        query_image = self.images[1]
+        train_image = self.images[1]
+        query_image = self.images[0]
 
         ############################################
         #                MAIN BODY                 #
@@ -153,9 +164,9 @@ class VisualOdometry:
             # Recover best configuration (for best weight)
             best_matches = histogram_filter.saved_configuration.filter_data_by_histogram()
 
-            if parameters.plot_images:
-                processed_data_plotter.plot_histogram_filtering(good_matches, best_matches,
-                                                                histogram_filter, max_weight, max_fit)
+            if False:  # parameters.plot_images:
+                processed_data_plotter.plot_histogram_filtering(good_matches, best_matches, histogram_filter,
+                                                                max_weight, max_fit)
 
             n_final_matches = len(best_matches)
 
@@ -166,6 +177,10 @@ class VisualOdometry:
             displacement_x = np.zeros([n_final_matches, 1])
             displacement_y = np.zeros([n_final_matches, 1])
 
+            matched_train_points = [None] * n_final_matches
+            matched_query_points = [None] * n_final_matches
+
+            troublesome_matches = np.array([])
             # Proceed to calculate deformations and point maps
             for match_index, match_object in enumerate(best_matches):
                 dist = [a_i - b_i for a_i, b_i in zip(
@@ -176,24 +191,59 @@ class VisualOdometry:
                 displacement_x[match_index] = dist[0]
                 displacement_y[match_index] = dist[1]
 
+                matched_train_points[match_index] = train_image.keypoints[match_object.queryIdx].pt
+                matched_query_points[match_index] = query_image.keypoints[match_object.trainIdx].pt
+
+            for index in sorted(troublesome_matches, reverse=True):
+                del matched_train_points[int(index)]
+                del matched_query_points[int(index)]
+
             try:
                 start = time.time()
-                h_matrix = RansacFilter.ransac_homography(train_image.keypoints, query_image.keypoints,
-                                                          good_matches, processed_data_plotter, parameters.plot_images)
+                [h_matrix, mask] = cv2.findEssentialMat(np.array(matched_train_points, dtype=float),
+                                                        np.array(matched_query_points, dtype=float), self.camera_K)
 
-                n_solutions = cv2.decomposeHomographyMat(h_matrix, self.camera_K)
+                matched_query_points = np.array(matched_query_points)
+                matched_train_points = np.array(matched_train_points)
+
+                if parameters.plot_images:
+                    processed_data_plotter.plot_point_correspondances(
+                        np.reshape(matched_train_points[mask * np.ones([1, 2]) == 1], [-1, 2]),
+                        np.reshape(matched_query_points[mask * np.ones([1, 2]) == 1], [-1, 2]))
+
+                [n_values, rot_mat, t_vec, mask] = \
+                    cv2.recoverPose(h_matrix, np.array(matched_train_points, dtype=float),
+                                    np.array(matched_query_points, dtype=float), self.camera_K)
+
+                [roll, pitch, yaw] = rotation_matrix_to_euler_angles(rot_mat)
+
+                rospy.logwarn("Roll, pitch, yaw: %s %s %s", roll, pitch, yaw)
+                rospy.logwarn(t_vec)
+
+                t = TransformStamped()
+                t.header.frame_id = "world"
+                t.child_frame_id = "axis"
+                t.header.stamp = rospy.Time.now()
+                translation = Vector3(t_vec[0], t_vec[1], t_vec[2])
+                self.stacked_position = Vector3(
+                    self.stacked_position.x + translation.x,
+                    self.stacked_position.y + translation.y,
+                    self.stacked_position.z + translation.z)
+                quaternion = tf.transformations.quaternion_from_euler(roll, pitch, yaw)
+                quaternion = tf.transformations.quaternion_multiply(self.stacked_rotation, quaternion)
+                self.stacked_rotation = quaternion
+                quaternion = Quaternion(quaternion[0], quaternion[1], quaternion[2], quaternion[3])
+                t.transform.translation = self.stacked_position
+                t.transform.rotation = quaternion
+                self.transform_broadcaster.sendTransform(t)
 
                 end = time.time()
                 rospy.logwarn("TIME: RANSAC homography done. Elapsed time: %s", end - start)
 
-                rot_mat = n_solutions[1]
-                trans_mat = n_solutions[2]
-
-                # rospy.logwarn(rot_mat)
-                # rospy.logwarn(trans_mat)
-
-            except Exception:
+            except Exception as e:
+                rospy.logerr(e)
                 rospy.logwarn("Not enough matches for RANSAC homography")
+                raise
 
 
 def define_parameters():
@@ -219,6 +269,9 @@ def define_parameters():
     # Crop iterations counter. During each iteration the area of matching is reduced based on the most likely
     # region of last iteration
     parameters.crop_iterations = 1
+
+    parameters.matcher = 'BF'
+    parameters.feature_extractor = 'ORB'
 
     return parameters
 
