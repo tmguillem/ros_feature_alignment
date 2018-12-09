@@ -12,8 +12,8 @@ import tf.transformations
 from cv_bridge import CvBridge
 
 from feature_visual_odometry.data_plotter import DataPlotter
-from feature_visual_odometry.match_geometric_filters import HistogramLogicFilter, RansacFilter
-from feature_visual_odometry.utils import knn_match_filter, rotation_matrix_to_euler_angles
+from feature_visual_odometry.match_geometric_filters import HistogramLogicFilter
+from feature_visual_odometry.utils import knn_match_filter, rotation_matrix_to_euler_angles, qv_multiply
 from feature_visual_odometry.image_manager import ImageManager
 
 from sensor_msgs.msg import CameraInfo, CompressedImage
@@ -76,7 +76,7 @@ class VisualOdometry:
         cv_image = self.bridge.compressed_imgmsg_to_cv2(data)
 
         # Read new image, extract features, and flip vector to place it in the first position
-        self.images[1].load_image(cv_image)
+        self.images[1].load_image(cv_image, gray_scale=True)
         self.extract_image_features(self.images[1])
         self.images = np.flip(self.images)
 
@@ -199,6 +199,8 @@ class VisualOdometry:
                 del matched_query_points[int(index)]
 
             try:
+
+                # Extract essential matrix
                 start = time.time()
                 [h_matrix, mask] = cv2.findEssentialMat(np.array(matched_train_points, dtype=float),
                                                         np.array(matched_query_points, dtype=float), self.camera_K)
@@ -206,33 +208,43 @@ class VisualOdometry:
                 matched_query_points = np.array(matched_query_points)
                 matched_train_points = np.array(matched_train_points)
 
+                # Stream points used for essential matrix calculation
                 if parameters.plot_images:
                     processed_data_plotter.plot_point_correspondances(
                         np.reshape(matched_train_points[mask * np.ones([1, 2]) == 1], [-1, 2]),
                         np.reshape(matched_query_points[mask * np.ones([1, 2]) == 1], [-1, 2]))
 
+                # Recover rotation and translation from essential matrix
                 [n_values, rot_mat, t_vec, mask] = \
                     cv2.recoverPose(h_matrix, np.array(matched_train_points, dtype=float),
                                     np.array(matched_query_points, dtype=float), self.camera_K)
-
-                [roll, pitch, yaw] = rotation_matrix_to_euler_angles(rot_mat)
-
-                rospy.logwarn("Roll, pitch, yaw: %s %s %s", roll, pitch, yaw)
-                rospy.logwarn(t_vec)
 
                 t = TransformStamped()
                 t.header.frame_id = "world"
                 t.child_frame_id = "axis"
                 t.header.stamp = rospy.Time.now()
+
+                # Rotate displacement vector by duckiebot rotation wrt world frame and add it to stacked displacement
+                t_vec = qv_multiply(self.stacked_rotation, t_vec)
                 translation = Vector3(t_vec[0], t_vec[1], t_vec[2])
                 self.stacked_position = Vector3(
                     self.stacked_position.x + translation.x,
                     self.stacked_position.y + translation.y,
                     self.stacked_position.z + translation.z)
+
+                # Calculate euler rotation from matrix, and quaternion from euler rotation
+                [roll, pitch, yaw] = rotation_matrix_to_euler_angles(rot_mat)
                 quaternion = tf.transformations.quaternion_from_euler(roll, pitch, yaw)
+
+                # Add quaternion rotation to stacked rotation to obtain the rotation transformation between world and
+                # duckiebot frames
                 quaternion = tf.transformations.quaternion_multiply(self.stacked_rotation, quaternion)
+
+                # Store quaternion and transform it to geometry message
                 self.stacked_rotation = quaternion
                 quaternion = Quaternion(quaternion[0], quaternion[1], quaternion[2], quaternion[3])
+
+                # Broadcast transform
                 t.transform.translation = self.stacked_position
                 t.transform.rotation = quaternion
                 self.transform_broadcaster.sendTransform(t)
@@ -260,7 +272,7 @@ def define_parameters():
     parameters.shrink_x_ratio = 1 / 2
     parameters.shrink_y_ratio = 1 / 2
 
-    parameters.plot_images = False
+    parameters.plot_images = True
 
     # Knn weight ratio exploration. Relates how bigger must the first match be wrt the second to be considered a match
     # parameters.histogram_weigh = np.arange(1.9, 1.3, -0.05)

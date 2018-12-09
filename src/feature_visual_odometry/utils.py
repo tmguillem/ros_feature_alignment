@@ -1,5 +1,6 @@
 import numpy as np
 import math
+import tf.transformations
 
 
 # Gaussian function model to filter out unwanted matches during SURF registration
@@ -153,3 +154,19 @@ def rotation_matrix_to_euler_angles(r_mat):
         z = 0
 
     return np.array([x, y, z])
+
+
+def qv_multiply(q1, v1):
+    """
+    Rotate vector v1 by quaternion q1
+
+    :param q1: rotation quaternion
+    :param v1: position vector
+    :return: v1 rotated by q1
+    """
+    q2 = list(v1)
+    q2.append(0.0)
+    return tf.transformations.quaternion_multiply(
+        tf.transformations.quaternion_multiply(q1, q2),
+        tf.transformations.quaternion_conjugate(q1)
+    )[:3]
