@@ -260,7 +260,7 @@ def define_parameters():
     parameters.shrink_x_ratio = 1 / 2
     parameters.shrink_y_ratio = 1 / 2
 
-    parameters.plot_images = True
+    parameters.plot_images = False
 
     # Knn weight ratio exploration. Relates how bigger must the first match be wrt the second to be considered a match
     # parameters.histogram_weigh = np.arange(1.9, 1.3, -0.05)

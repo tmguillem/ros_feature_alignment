@@ -1,7 +1,13 @@
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+from matplotlib.figure import Figure
+
 import cv2
 import numpy as np
 import rospy
+from cv_bridge import CvBridge
+
+from sensor_msgs.msg import Image
 
 from match_geometric_filters import HistogramLogicFilter
 from utils import gauss
@@ -12,6 +18,9 @@ class DataPlotter:
     def __init__(self, train_image, query_image):
         self.train_image_manager = train_image
         self.query_image_manager = query_image
+        self.image_bridge = CvBridge()
+        self.ransac_publisher = rospy.Publisher("ransac_homography", Image, queue_size=2)
+        self.match_publisher = rospy.Publisher("matches", Image, queue_size=2)
 
     def plot_histogram_filtering(self, good_matches, best_matches, histogram_filter, weight, fitness):
         """
@@ -81,16 +90,25 @@ class DataPlotter:
         img1 = self.train_image_manager.image
         img2 = self.query_image_manager.image
 
-        plt.figure()
+        fig = Figure()
+        canvas = FigureCanvas(figure=fig)
         appended_pixels = img2.shape[0:2]
-        plt.imshow(np.append(img1, img2, axis=1))
+        ax = fig.gca()
+
+        ax.imshow(np.append(img1, img2, axis=1))
         for i in range(0, len(train_pts)):
             try:
-                plt.plot([train_pts[i][0], query_pts[i][0] + appended_pixels[1]], [train_pts[i][1], query_pts[i][1]],
-                         'o-', markerfacecolor='none')
+                ax.plot([train_pts[i][0], query_pts[i][0] + appended_pixels[1]], [train_pts[i][1], query_pts[i][1]],
+                        'o-', markerfacecolor='none')
             except Exception as e:
                 rospy.logerr(e)
-        plt.show()
+
+        canvas.draw()
+        img3 = np.fromstring(canvas.tostring_rgb(), dtype=np.uint8, sep='')
+        img3 = img3.reshape(canvas.get_width_height()[::-1] + (3,))
+        subplot_bb = np.round(ax.bbox.extents)
+        img3 = img3[int(subplot_bb[1]):int(subplot_bb[3]), int(subplot_bb[0]):int(subplot_bb[2])]
+        self.match_publisher.publish(self.image_bridge.cv2_to_imgmsg(img3))
 
     def plot_query_bounding_box(self, bounding_box):
         """
@@ -145,5 +163,4 @@ class DataPlotter:
 
             img3 = cv2.drawMatches(img1, kp1, img2, kp2, matches, None, **draw_params)
 
-            plt.imshow(img3, 'gray')
-            plt.show()
+            self.ransac_publisher.publish(self.image_bridge.cv2_to_imgmsg(img3))
