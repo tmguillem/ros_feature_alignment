@@ -34,6 +34,7 @@ class AlignmentParameters:
         self.feature_extractor = 'ORB'
         self.matcher = 'BF'
         self.knn_neighbors = 0
+        self.filter_by_histogram = False
 
         self.knn_weight = [1.5]
 
@@ -136,8 +137,8 @@ class VisualOdometry:
         # Explore all the weight values
         for weight in parameters.knn_weight:
 
+            # Filter knn matches by best to second best match ratio
             if parameters.matcher == 'KNN':
-                # Filter knn matches by best to second best match ratio
                 start = time.time()
                 good_matches = knn_match_filter(matches, weight)
                 end = time.time()
@@ -146,116 +147,122 @@ class VisualOdometry:
                 good_matches = matches
 
             # Filter histograms by gaussian function fitting
-            start = time.time()
-            histogram_filter.fit_gaussian(good_matches, train_image.keypoints,
-                                          query_image.keypoints, parameters.angle_th, parameters.length_th)
-            end = time.time()
-            rospy.logwarn("TIME: Histogram filtering done. Elapsed time: %s", end - start)
+            if parameters.filter_by_histogram:
+                start = time.time()
+                histogram_filter.fit_gaussian(good_matches, train_image.keypoints,
+                                              query_image.keypoints, parameters.angle_th, parameters.length_th)
+                end = time.time()
+                rospy.logwarn("TIME: Histogram filtering done. Elapsed time: %s", end - start)
 
-            fitness = histogram_filter.angle_fitness + histogram_filter.length_fitness
+                fitness = histogram_filter.angle_fitness + histogram_filter.length_fitness
 
-            if fitness > max_fit:
-                # Store current configuration as best configuration
-                histogram_filter.save_configuration()
-                max_fit = fitness
-                max_weight = weight
+                # Store current configuration as best configuration if fitness is new maximum
+                if fitness > max_fit:
+                    histogram_filter.save_configuration()
+                    max_fit = fitness
+                    max_weight = weight
 
-        if histogram_filter.saved_configuration is not None:
-            # Recover best configuration (for best weight)
+        # Recover best configuration from histogram filtering (for best weight)
+        if parameters.filter_by_histogram and histogram_filter.saved_configuration is not None:
             best_matches = histogram_filter.saved_configuration.filter_data_by_histogram()
 
             if False:  # parameters.plot_images:
                 processed_data_plotter.plot_histogram_filtering(good_matches, best_matches, histogram_filter,
                                                                 max_weight, max_fit)
+        else:
+            best_matches = good_matches
 
-            n_final_matches = len(best_matches)
+        n_final_matches = len(best_matches)
 
-            # Initialize final displacement vectors; x and y will contain the initial points and Dx and Dy the
-            # corresponding deformations
-            x = np.zeros([n_final_matches, 1])
-            y = np.zeros([n_final_matches, 1])
-            displacement_x = np.zeros([n_final_matches, 1])
-            displacement_y = np.zeros([n_final_matches, 1])
+        # Initialize final displacement vectors; x and y will contain the initial points and Dx and Dy the
+        # corresponding deformations
+        x = np.zeros([n_final_matches, 1])
+        y = np.zeros([n_final_matches, 1])
+        displacement_x = np.zeros([n_final_matches, 1])
+        displacement_y = np.zeros([n_final_matches, 1])
 
-            matched_train_points = [None] * n_final_matches
-            matched_query_points = [None] * n_final_matches
+        matched_train_points = [None] * n_final_matches
+        matched_query_points = [None] * n_final_matches
 
-            troublesome_matches = np.array([])
-            # Proceed to calculate deformations and point maps
-            for match_index, match_object in enumerate(best_matches):
-                dist = [a_i - b_i for a_i, b_i in zip(
-                    query_image.keypoints[match_object.trainIdx].pt,
-                    train_image.keypoints[match_object.queryIdx].pt)]
-                x[match_index] = int(round(train_image.keypoints[match_object.queryIdx].pt[0]))
-                y[match_index] = int(round(train_image.keypoints[match_object.queryIdx].pt[1]))
-                displacement_x[match_index] = dist[0]
-                displacement_y[match_index] = dist[1]
+        troublesome_matches = np.array([])
+        # Proceed to calculate deformations and point maps
+        for match_index, match_object in enumerate(best_matches):
+            dist = [a_i - b_i for a_i, b_i in zip(
+                query_image.keypoints[match_object.trainIdx].pt,
+                train_image.keypoints[match_object.queryIdx].pt)]
+            x[match_index] = int(round(train_image.keypoints[match_object.queryIdx].pt[0]))
+            y[match_index] = int(round(train_image.keypoints[match_object.queryIdx].pt[1]))
+            displacement_x[match_index] = dist[0]
+            displacement_y[match_index] = dist[1]
 
-                matched_train_points[match_index] = train_image.keypoints[match_object.queryIdx].pt
-                matched_query_points[match_index] = query_image.keypoints[match_object.trainIdx].pt
+            matched_train_points[match_index] = train_image.keypoints[match_object.queryIdx].pt
+            matched_query_points[match_index] = query_image.keypoints[match_object.trainIdx].pt
 
-            for index in sorted(troublesome_matches, reverse=True):
-                del matched_train_points[int(index)]
-                del matched_query_points[int(index)]
+        # Remove matches that are not in list (TODO: why is this even happening?)
+        for index in sorted(troublesome_matches, reverse=True):
+            del matched_train_points[int(index)]
+            del matched_query_points[int(index)]
 
-            try:
+        try:
 
-                # Extract essential matrix
-                start = time.time()
-                [h_matrix, mask] = cv2.findEssentialMat(np.array(matched_train_points, dtype=float),
-                                                        np.array(matched_query_points, dtype=float), self.camera_K)
+            # Extract essential matrix
+            start = time.time()
+            [h_matrix, mask] = cv2.findEssentialMat(np.array(matched_train_points, dtype=float),
+                                                    np.array(matched_query_points, dtype=float), self.camera_K,
+                                                    method=cv2.RANSAC, prob=0.999, threshold=1.0)
 
-                matched_query_points = np.array(matched_query_points)
-                matched_train_points = np.array(matched_train_points)
+            # Remove RANSAC outliers
+            matched_query_points = np.reshape(
+                np.array(matched_query_points, dtype=float)[mask * np.ones([1, 2]) == 1], [-1, 2])
+            matched_train_points = np.reshape(
+                np.array(matched_train_points, dtype=float)[mask * np.ones([1, 2]) == 1], [-1, 2])
 
-                # Stream points used for essential matrix calculation
-                if parameters.plot_images:
-                    processed_data_plotter.plot_point_correspondances(
-                        np.reshape(matched_train_points[mask * np.ones([1, 2]) == 1], [-1, 2]),
-                        np.reshape(matched_query_points[mask * np.ones([1, 2]) == 1], [-1, 2]))
+            # Stream points used for essential matrix calculation for debugging
+            if parameters.plot_images:
+                processed_data_plotter.plot_point_correspondances(
+                    matched_train_points, matched_query_points)
 
-                # Recover rotation and translation from essential matrix
-                [n_values, rot_mat, t_vec, mask] = \
-                    cv2.recoverPose(h_matrix, np.array(matched_train_points, dtype=float),
-                                    np.array(matched_query_points, dtype=float), self.camera_K)
+            # Recover rotation and translation from essential matrix
+            [n_values, rot_mat, t_vec, pose_mask] = \
+                cv2.recoverPose(h_matrix, matched_train_points, matched_query_points, self.camera_K)
 
-                t = TransformStamped()
-                t.header.frame_id = "world"
-                t.child_frame_id = "axis"
-                t.header.stamp = rospy.Time.now()
+            t = TransformStamped()
+            t.header.frame_id = "world"
+            t.child_frame_id = "axis"
+            t.header.stamp = rospy.Time.now()
 
-                # Rotate displacement vector by duckiebot rotation wrt world frame and add it to stacked displacement
-                t_vec = qv_multiply(self.stacked_rotation, t_vec)
-                translation = Vector3(t_vec[0], t_vec[1], t_vec[2])
-                self.stacked_position = Vector3(
-                    self.stacked_position.x + translation.x,
-                    self.stacked_position.y + translation.y,
-                    self.stacked_position.z + translation.z)
+            # Rotate displacement vector by duckiebot rotation wrt world frame and add it to stacked displacement
+            t_vec = qv_multiply(self.stacked_rotation, t_vec)
+            translation = Vector3(t_vec[0], t_vec[1], t_vec[2])
+            self.stacked_position = Vector3(
+                self.stacked_position.x + translation.x,
+                self.stacked_position.y + translation.y,
+                self.stacked_position.z + translation.z)
 
-                # Calculate euler rotation from matrix, and quaternion from euler rotation
-                [roll, pitch, yaw] = rotation_matrix_to_euler_angles(rot_mat)
-                quaternion = tf.transformations.quaternion_from_euler(roll, pitch, yaw)
+            # Calculate euler rotation from matrix, and quaternion from euler rotation
+            [roll, pitch, yaw] = rotation_matrix_to_euler_angles(rot_mat)
+            quaternion = tf.transformations.quaternion_from_euler(roll, pitch, yaw)
 
-                # Add quaternion rotation to stacked rotation to obtain the rotation transformation between world and
-                # duckiebot frames
-                quaternion = tf.transformations.quaternion_multiply(self.stacked_rotation, quaternion)
+            # Add quaternion rotation to stacked rotation to obtain the rotation transformation between world and
+            # duckiebot frames
+            quaternion = tf.transformations.quaternion_multiply(self.stacked_rotation, quaternion)
 
-                # Store quaternion and transform it to geometry message
-                self.stacked_rotation = quaternion
-                quaternion = Quaternion(quaternion[0], quaternion[1], quaternion[2], quaternion[3])
+            # Store quaternion and transform it to geometry message
+            self.stacked_rotation = quaternion
+            quaternion = Quaternion(quaternion[0], quaternion[1], quaternion[2], quaternion[3])
 
-                # Broadcast transform
-                t.transform.translation = self.stacked_position
-                t.transform.rotation = quaternion
-                self.transform_broadcaster.sendTransform(t)
+            # Broadcast transform
+            t.transform.translation = self.stacked_position
+            t.transform.rotation = quaternion
+            self.transform_broadcaster.sendTransform(t)
 
-                end = time.time()
-                rospy.logwarn("TIME: RANSAC homography done. Elapsed time: %s", end - start)
+            end = time.time()
+            rospy.logwarn("TIME: RANSAC homography done. Elapsed time: %s", end - start)
 
-            except Exception as e:
-                rospy.logerr(e)
-                rospy.logwarn("Not enough matches for RANSAC homography")
-                raise
+        except Exception as e:
+            rospy.logerr(e)
+            rospy.logwarn("Not enough matches for RANSAC homography")
+            raise
 
 
 def define_parameters():
@@ -272,7 +279,8 @@ def define_parameters():
     parameters.shrink_x_ratio = 1 / 2
     parameters.shrink_y_ratio = 1 / 2
 
-    parameters.plot_images = True
+    # Publish debug images
+    parameters.plot_images = False
 
     # Knn weight ratio exploration. Relates how bigger must the first match be wrt the second to be considered a match
     # parameters.histogram_weigh = np.arange(1.9, 1.3, -0.05)
@@ -282,8 +290,11 @@ def define_parameters():
     # region of last iteration
     parameters.crop_iterations = 1
 
+    # Feature extraction and matching parameters
     parameters.matcher = 'BF'
     parameters.feature_extractor = 'ORB'
+
+    parameters.filter_by_histogram = False
 
     return parameters
 

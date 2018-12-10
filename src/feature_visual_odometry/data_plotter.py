@@ -108,6 +108,11 @@ class DataPlotter:
         img3 = img3.reshape(canvas.get_width_height()[::-1] + (3,))
         subplot_bb = np.round(ax.bbox.extents)
         img3 = img3[int(subplot_bb[1]):int(subplot_bb[3]), int(subplot_bb[0]):int(subplot_bb[2])]
+
+        # plt.figure()
+        # plt.imshow(img3)
+        # plt.show()
+
         self.match_publisher.publish(self.image_bridge.cv2_to_imgmsg(img3))
 
     def plot_query_bounding_box(self, bounding_box):
