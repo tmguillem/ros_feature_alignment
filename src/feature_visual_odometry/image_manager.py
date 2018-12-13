@@ -19,6 +19,8 @@ class ImageManager:
         :param shrink_y: shrink factor for y axis
         """
         self.image = cv2.resize(self.image, (0, 0), fx=shrink_x, fy=shrink_y)
+        self.height *= shrink_x
+        self.width *= shrink_y
 
     def load_image(self, image, gray_scale):
         """

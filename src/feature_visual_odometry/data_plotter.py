@@ -86,7 +86,14 @@ class DataPlotter:
         plt.title('Length distribution')
         plt.show()
 
-    def plot_point_correspondances(self, train_pts, query_pts):
+    def plot_point_correspondances(self, train_pts, query_pts, proximity_mask):
+        """
+        Plots the point correspondences specified by the two input vectors in train and query images respectively
+
+        :param train_pts:
+        :param query_pts:
+        :param proximity_mask:
+        """
         img1 = self.train_image_manager.image
         img2 = self.query_image_manager.image
 
@@ -96,6 +103,7 @@ class DataPlotter:
         ax = fig.gca()
 
         ax.imshow(np.append(img1, img2, axis=1))
+        ax.imshow(np.append(proximity_mask, proximity_mask, axis=1), alpha=0.25)
         for i in range(0, len(train_pts)):
             try:
                 ax.plot([train_pts[i][0], query_pts[i][0] + appended_pixels[1]], [train_pts[i][1], query_pts[i][1]],
@@ -103,6 +111,7 @@ class DataPlotter:
             except Exception as e:
                 rospy.logerr(e)
 
+        # Render plot as RGB image
         canvas.draw()
         img3 = np.fromstring(canvas.tostring_rgb(), dtype=np.uint8, sep='')
         img3 = img3.reshape(canvas.get_width_height()[::-1] + (3,))

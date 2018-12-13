@@ -128,7 +128,9 @@ def is_rotation_matrix(r_mat):
     r_mat_transpose = np.transpose(r_mat)
     identity_candidate = np.dot(r_mat_transpose, r_mat)
     n = np.linalg.norm(np.identity(3, dtype=r_mat.dtype) - identity_candidate)
-    return n < 1e-6
+    if n < 1e-6:
+        return True
+    return False
 
 
 def rotation_matrix_to_euler_angles(r_mat):
@@ -164,9 +166,25 @@ def qv_multiply(q1, v1):
     :param v1: position vector
     :return: v1 rotated by q1
     """
-    q2 = list(v1)
+    q2 = list(np.squeeze(v1))
     q2.append(0.0)
     return tf.transformations.quaternion_multiply(
         tf.transformations.quaternion_multiply(q1, q2),
         tf.transformations.quaternion_conjugate(q1)
     )[:3]
+
+
+def create_circular_mask(h, w, center=None, radius=None):
+
+    if center is None:
+        # use the middle of the image
+        center = [int(w/2), int(h/2)]
+    if radius is None:
+        # use the smallest distance between the center and image walls
+        radius = min(center[0], center[1], w-center[0], h-center[1])
+
+    Y, X = np.ogrid[:h, :w]
+    dist_from_center = np.sqrt((X - center[0])**2 + (Y-center[1])**2)
+
+    mask = dist_from_center <= radius
+    return mask
