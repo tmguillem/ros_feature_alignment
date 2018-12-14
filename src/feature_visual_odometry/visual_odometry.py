@@ -9,6 +9,7 @@ import rospy
 import tf2_ros as tf2
 import tf.transformations
 
+from math import isnan
 from cv_bridge import CvBridge
 
 from data_plotter import DataPlotter
@@ -80,7 +81,7 @@ class VisualOdometry:
         self.images = np.flip(self.images)
 
         if self.images[1].height > 0:
-            self.visual_odometry_core(rospy.get_time() - self.last_ros_time)
+            self.visual_odometry_core()
 
         self.last_ros_time = rospy.get_time()
 
@@ -103,7 +104,7 @@ class VisualOdometry:
         end = time.time()
         rospy.logwarn("TIME: Extract features of image. Elapsed time: %s", end - start)
 
-    def visual_odometry_core(self, dt):
+    def visual_odometry_core(self):
 
         parameters = self.parameters
         train_image = self.images[1]
@@ -176,21 +177,14 @@ class VisualOdometry:
         # corresponding deformations
         x = np.zeros([n_final_matches, 1])
         y = np.zeros([n_final_matches, 1])
-        displacement_x = np.zeros([n_final_matches, 1])
-        displacement_y = np.zeros([n_final_matches, 1])
 
         matched_train_points = [None] * n_final_matches
         matched_query_points = [None] * n_final_matches
 
         # Proceed to calculate deformations and point maps
         for match_index, match_object in enumerate(matches):
-            dist = [a_i - b_i for a_i, b_i in zip(
-                query_image.keypoints[match_object.trainIdx].pt,
-                train_image.keypoints[match_object.queryIdx].pt)]
             x[match_index] = int(round(train_image.keypoints[match_object.queryIdx].pt[0]))
             y[match_index] = int(round(train_image.keypoints[match_object.queryIdx].pt[1]))
-            displacement_x[match_index] = dist[0]
-            displacement_y[match_index] = dist[1]
 
             matched_train_points[match_index] = train_image.keypoints[match_object.queryIdx].pt
             matched_query_points[match_index] = query_image.keypoints[match_object.trainIdx].pt
@@ -218,11 +212,14 @@ class VisualOdometry:
             for distant_q_p, distant_t_p in \
                     zip(match_distance_filter.distant_query_points, match_distance_filter.distant_train_points):
 
-                rot = (distant_t_p[0] - distant_q_p[0]) \
+                a = (distant_t_p[0] - distant_q_p[0]) \
                     / np.sqrt((distant_t_p[0]*distant_q_p[0])**2+distant_t_p[0]**2+distant_q_p[0]**2+1)
+                rot = np.arccos((distant_t_p[1]+distant_t_p[0]*distant_q_p[1]*np.array([a, -a]))/distant_q_p[1])
+                rot = [rot_h for rot_h in rot if not isnan(rot_h)]
 
-                rot_hypothesis.append(rot)
-                rot_hypothesis.append(-rot)
+                for rot_h in np.unique(rot):
+                    rot_hypothesis.append(rot_h)
+                    rot_hypothesis.append(-rot_h)
 
             rot_hypothesis = np.unique(rot_hypothesis)
             rot_hypothesis_rmse = np.zeros((len(rot_hypothesis), 1))
@@ -239,6 +236,7 @@ class VisualOdometry:
                               np.ones((n_distant_matches, 1)), axis=1),
                     rot_mat)
 
+                # TODO: implement histogram voting?
                 # Calculate rmse of hypothesis with all peripheral points
                 error = rotated_train_points - np.append(
                     np.reshape(match_distance_filter.distant_query_points, (n_distant_matches, 2)),
@@ -247,10 +245,10 @@ class VisualOdometry:
                 rot_hypothesis_rmse[hypothesis_index] = np.sum(np.sqrt(np.sum(np.power(error, 2), axis=1)))
 
             # TODO: make the scaling adjustable from the features
-            theta = rot_hypothesis[np.argmin(rot_hypothesis_rmse)] * -2
+            theta = rot_hypothesis[np.argmin(rot_hypothesis_rmse)]
             z_rot_mat = np.array([[np.cos(theta), np.sin(theta), 0], [-np.sin(theta), np.cos(theta), 0], [0, 0, 1]])
 
-            t_vec = [self.joy_command.v * dt, 0, 0]
+            t_vec = [self.joy_command.v / 30.0, 0, 0]
 
             n_proximal_matches = n_final_matches - n_distant_matches
             t_hypothesis = []
@@ -286,7 +284,6 @@ class VisualOdometry:
                 t_hypothesis_rmse[hypothesis_index] = np.sum(np.sqrt(np.sum(np.power(error, 2), axis=1)))
 
             # t_vec = np.matmul(np.linalg.inv(self.camera_K), t_hypothesis[np.argmin(t_hypothesis_rmse)])
-            # z_rot_mat = np.matmul(np.linalg.inv(self.camera_K), z_rot_mat)
 
             """
             # Extract essential matrix

@@ -133,8 +133,10 @@ class DistanceFilter:
 
             if not proximity_mask[int(query_point[1]), int(query_point[0])] and \
                     not proximity_mask[int(train_point[1]), int(train_point[0])]:
-                self.distant_query_points.append(np.matmul(np.linalg.inv(self.camera_K), query_point)[0:2])
-                self.distant_train_points.append(np.matmul(np.linalg.inv(self.camera_K), train_point)[0:2])
+                # self.distant_query_points.append(np.matmul(np.linalg.inv(self.camera_K), query_point)[0:2])
+                # self.distant_train_points.append(np.matmul(np.linalg.inv(self.camera_K), train_point)[0:2])
+                self.distant_query_points.append(query_point[0:2] * [1 / self.image_shape[1], 1 / self.image_shape[0]])
+                self.distant_train_points.append(train_point[0:2] * [1 / self.image_shape[1], 1 / self.image_shape[0]])
             else:
                 self.close_query_points.append(query_point[0:2] * [1 / self.image_shape[1], 1 / self.image_shape[0]])
                 self.close_train_points.append(train_point[0:2] * [1 / self.image_shape[1], 1 / self.image_shape[0]])
