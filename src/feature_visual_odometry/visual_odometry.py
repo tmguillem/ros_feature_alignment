@@ -12,7 +12,7 @@ import tf.transformations
 from cv_bridge import CvBridge
 
 from data_plotter import DataPlotter
-from match_geometric_filters import HistogramLogicFilter
+from match_geometric_filters import HistogramLogicFilter, DistanceFilter
 from utils import knn_match_filter, rotation_matrix_to_euler_angles, qv_multiply, create_circular_mask
 from image_manager import ImageManager
 
@@ -44,6 +44,8 @@ class VisualOdometry:
         # Current command sent to duckiebot
         self.joy_command = Twist2DStamped()
 
+        self.last_ros_time = rospy.get_time()
+
         # Initiate the feature detector
         if parameters.feature_extractor == 'SURF':
             self.cv2_detector = cv2.xfeatures2d.SURF_create()
@@ -52,15 +54,15 @@ class VisualOdometry:
         else:
             self.cv2_detector = cv2.xfeatures2d.SIFT_create()
 
-            # aux_image_manager = ImageManager()
-            # aux_image_manager.read_image(
-            #     '/home/guillem/Documents/feature_alignment/catkin_ws/src/image_provider/Images/IMG_0568.JPG')
-            # image1 = self.bridge.cv2_to_compressed_imgmsg(aux_image_manager.image)
-            # self.save_image_and_trigger_vo(image1)
-            # aux_image_manager.read_image(
-            #     '/home/guillem/Documents/feature_alignment/catkin_ws/src/image_provider/Images/IMG_0570.JPG')
-            # image2 = self.bridge.cv2_to_compressed_imgmsg(aux_image_manager.image)
-            # self.save_image_and_trigger_vo(image2)
+        # aux_image_manager = ImageManager()
+        # aux_image_manager.read_image(
+        #     '/home/guillem/Documents/feature_alignment/catkin_ws/src/image_provider/Images/IMG_0568.JPG')
+        # image1 = self.bridge.cv2_to_compressed_imgmsg(aux_image_manager.image)
+        # self.save_image_and_trigger_vo(image1)
+        # aux_image_manager.read_image(
+        #     '/home/guillem/Documents/feature_alignment/catkin_ws/src/image_provider/Images/IMG_0570.JPG')
+        # image2 = self.bridge.cv2_to_compressed_imgmsg(aux_image_manager.image)
+        # self.save_image_and_trigger_vo(image2)
 
     def save_command(self, data):
         self.joy_command = data
@@ -78,10 +80,12 @@ class VisualOdometry:
         self.images = np.flip(self.images)
 
         if self.images[1].height > 0:
-            self.visual_odometry_core()
+            self.visual_odometry_core(rospy.get_time() - self.last_ros_time)
 
-        rospy.loginfo("TIME: Total time: %s", time.time() - start)
-        rospy.loginfo("===================================================")
+        self.last_ros_time = rospy.get_time()
+
+        rospy.logwarn("TIME: Total time: %s", time.time() - start)
+        rospy.logwarn("===================================================")
 
     def extract_image_features(self, image):
         parameters = self.parameters
@@ -90,16 +94,16 @@ class VisualOdometry:
         start = time.time()
         image.downsample(parameters.shrink_x_ratio, parameters.shrink_y_ratio)
         end = time.time()
-        rospy.loginfo("TIME: Down-sample image. Elapsed time: %s", end - start)
+        rospy.logwarn("TIME: Down-sample image. Elapsed time: %s", end - start)
 
         # Find the key points and descriptors for train image
         start = time.time()
         image.find_keypoints(self.cv2_detector)
-        rospy.loginfo("Number or keypoints: %s", len(image.keypoints))
+        rospy.logwarn("Number or keypoints: %s", len(image.keypoints))
         end = time.time()
-        rospy.loginfo("TIME: Extract features of image. Elapsed time: %s", end - start)
+        rospy.logwarn("TIME: Extract features of image. Elapsed time: %s", end - start)
 
-    def visual_odometry_core(self):
+    def visual_odometry_core(self, dt):
 
         parameters = self.parameters
         train_image = self.images[1]
@@ -123,7 +127,7 @@ class VisualOdometry:
             bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
             matches = bf.match(train_image.descriptors, query_image.descriptors)
         end = time.time()
-        rospy.loginfo("TIME: Matching done. Elapsed time: %s", end - start)
+        rospy.logwarn("TIME: Matching done. Elapsed time: %s", end - start)
 
         # Initialize fitness trackers
         fitness = float('-inf')
@@ -136,19 +140,17 @@ class VisualOdometry:
             # Filter knn matches by best to second best match ratio
             if parameters.matcher == 'KNN':
                 start = time.time()
-                good_matches = knn_match_filter(matches, weight)
+                matches = knn_match_filter(matches, weight)
                 end = time.time()
-                rospy.loginfo("TIME: Distance filtering of matches done. Elapsed time: %s", end - start)
-            else:
-                good_matches = matches
+                rospy.logwarn("TIME: Distance filtering of matches done. Elapsed time: %s", end - start)
 
             # Filter histograms by gaussian function fitting
             if parameters.filter_by_histogram:
                 start = time.time()
-                histogram_filter.fit_gaussian(good_matches, train_image.keypoints,
-                                              query_image.keypoints, parameters.angle_th, parameters.length_th)
+                histogram_filter.fit_gaussian(matches, train_image.keypoints, query_image.keypoints,
+                                              parameters.angle_th, parameters.length_th)
                 end = time.time()
-                rospy.loginfo("TIME: Histogram filtering done. Elapsed time: %s", end - start)
+                rospy.logwarn("TIME: Histogram filtering done. Elapsed time: %s", end - start)
 
                 fitness = histogram_filter.angle_fitness + histogram_filter.length_fitness
 
@@ -160,15 +162,15 @@ class VisualOdometry:
 
         # Recover best configuration from histogram filtering (for best weight)
         if parameters.filter_by_histogram and histogram_filter.saved_configuration is not None:
-            best_matches = histogram_filter.saved_configuration.filter_data_by_histogram()
+            unfiltered_matches = matches
+            matches = histogram_filter.saved_configuration.filter_data_by_histogram()
 
-            if False:  # parameters.plot_images:
-                processed_data_plotter.plot_histogram_filtering(good_matches, best_matches, histogram_filter,
-                                                                max_weight, max_fit)
-        else:
-            best_matches = good_matches
+            # Publish the results of histogram filtering
+            if parameters.plot_histogram_filtering:
+                processed_data_plotter.plot_histogram_filtering(
+                    unfiltered_matches, matches, histogram_filter, max_weight, max_fit)
 
-        n_final_matches = len(best_matches)
+        n_final_matches = len(matches)
 
         # Initialize final displacement vectors; x and y will contain the initial points and Dx and Dy the
         # corresponding deformations
@@ -180,9 +182,8 @@ class VisualOdometry:
         matched_train_points = [None] * n_final_matches
         matched_query_points = [None] * n_final_matches
 
-        troublesome_matches = np.array([])
         # Proceed to calculate deformations and point maps
-        for match_index, match_object in enumerate(best_matches):
+        for match_index, match_object in enumerate(matches):
             dist = [a_i - b_i for a_i, b_i in zip(
                 query_image.keypoints[match_object.trainIdx].pt,
                 train_image.keypoints[match_object.queryIdx].pt)]
@@ -194,41 +195,31 @@ class VisualOdometry:
             matched_train_points[match_index] = train_image.keypoints[match_object.queryIdx].pt
             matched_query_points[match_index] = query_image.keypoints[match_object.trainIdx].pt
 
-        # Remove matches that are not in list (TODO: why is this even happening?)
-        for index in sorted(troublesome_matches, reverse=True):
-            del matched_train_points[int(index)]
-            del matched_query_points[int(index)]
-
         try:
-
             [h, w] = [query_image.height, query_image.width]
 
             # Split between far-region and close region matches
-            # TODO: improve mask -> make it a function of intrinsic camera calibration
+            # TODO: improve mask -> make it a function of intrinsic camera calibration / estimated depth
             proximity_r = ((0.2 * h) ** 2 + (0.5 * w) ** 2) / (0.4 * h)
             proximity_mask = create_circular_mask(h, w, center=(w / 2, 0.3 * h + proximity_r), radius=proximity_r)
 
-            distant_query_matches = []
-            distant_train_matches = []
-
-            # Get far-region matches
-            for query_point, train_point in zip(matched_query_points, matched_train_points):
-                if not proximity_mask[int(query_point[1]), int(query_point[0])] and \
-                        not proximity_mask[int(train_point[1]), int(train_point[0])]:
-                    distant_query_matches.append(np.matmul(np.linalg.inv(self.camera_K), np.append([query_point], [1]))[0:2])
-                    distant_train_matches.append(np.matmul(np.linalg.inv(self.camera_K), np.append([train_point], [1]))[0:2])
+            match_distance_filter = DistanceFilter(matched_query_points, matched_train_points, self.camera_K, (h, w))
+            match_distance_filter.split_by_distance(proximity_mask)
 
             # Remove me
-            if parameters.plot_images:
-                processed_data_plotter.plot_point_correspondances(
+            if parameters.plot_matches:
+                processed_data_plotter.plot_point_correspondences(
                     matched_query_points, matched_train_points, proximity_mask)
 
-            # Calculate two rotation hypothesis for all far matches assuming that they lay close to the ground plane
-            n_distant_matches = len(distant_query_matches)
+            n_distant_matches = len(match_distance_filter.distant_query_points)
             rot_hypothesis = []
-            for distant_q_p, distant_t_p in zip(distant_query_matches, distant_train_matches):
+
+            # Calculate two rotation hypothesis for all far matches assuming that they lay close to the ground plane
+            for distant_q_p, distant_t_p in \
+                    zip(match_distance_filter.distant_query_points, match_distance_filter.distant_train_points):
+
                 rot = (distant_t_p[0] - distant_q_p[0]) \
-                      / np.sqrt((distant_t_p[0]*distant_q_p[0])**2+distant_t_p[0]**2+distant_q_p[0]**2+1)
+                    / np.sqrt((distant_t_p[0]*distant_q_p[0])**2+distant_t_p[0]**2+distant_q_p[0]**2+1)
 
                 rot_hypothesis.append(rot)
                 rot_hypothesis.append(-rot)
@@ -236,7 +227,7 @@ class VisualOdometry:
             rot_hypothesis = np.unique(rot_hypothesis)
             rot_hypothesis_rmse = np.zeros((len(rot_hypothesis), 1))
 
-            # Select the based hypothesis using histogram voting
+            # Select the best hypothesis using 1 point RANSAC
             for hypothesis_index in range(0, len(rot_hypothesis)):
                 hypothesis = rot_hypothesis[hypothesis_index]
                 rot_mat = np.array([[np.cos(hypothesis), np.sin(hypothesis), 0],
@@ -244,19 +235,58 @@ class VisualOdometry:
                                     [0, 0, 1]])
 
                 rotated_train_points = np.matmul(
-                    np.append(np.reshape(distant_train_matches, (n_distant_matches, 2)),
+                    np.append(np.reshape(match_distance_filter.distant_train_points, (n_distant_matches, 2)),
                               np.ones((n_distant_matches, 1)), axis=1),
                     rot_mat)
 
-                error = rotated_train_points - np.append(np.reshape(distant_query_matches, (n_distant_matches, 2)),
-                                                         np.ones((n_distant_matches, 1)), axis=1)
+                # Calculate rmse of hypothesis with all peripheral points
+                error = rotated_train_points - np.append(
+                    np.reshape(match_distance_filter.distant_query_points, (n_distant_matches, 2)),
+                    np.ones((n_distant_matches, 1)), axis=1)
+
                 rot_hypothesis_rmse[hypothesis_index] = np.sum(np.sqrt(np.sum(np.power(error, 2), axis=1)))
 
+            # TODO: make the scaling adjustable from the features
             theta = rot_hypothesis[np.argmin(rot_hypothesis_rmse)] * -2
-            z_rot_mat = np.array([[np.cos(theta), np.sin(theta), 0],
-                                  [-np.sin(theta), np.cos(theta), 0],
-                                  [0, 0, 1]])
-            t_vec = [self.joy_command.v, 0, 0]
+            z_rot_mat = np.array([[np.cos(theta), np.sin(theta), 0], [-np.sin(theta), np.cos(theta), 0], [0, 0, 1]])
+
+            t_vec = [self.joy_command.v * dt, 0, 0]
+
+            n_proximal_matches = n_final_matches - n_distant_matches
+            t_hypothesis = []
+
+            # Estimate translation vector
+            for proximal_q_p, proximal_t_p in \
+                    zip(match_distance_filter.close_query_points, match_distance_filter.close_train_points):
+                proximal_q_p = np.matmul(np.transpose(z_rot_mat), np.append([proximal_q_p], [1]))
+
+                ty = (proximal_t_p[1] - proximal_q_p[1]) * self.joy_command.v
+                tx = (proximal_t_p[0] - proximal_q_p[0]) * self.joy_command.v
+
+                t_hypothesis.append(np.matmul(np.transpose(z_rot_mat), [tx, ty, 0]))
+
+            t_hypothesis = np.unique(t_hypothesis, axis=0)
+            t_hypothesis_rmse = np.zeros((len(t_hypothesis), 1))
+
+            # Select the best hypothesis using 1 point RANSAC
+            for hypothesis_index in range(0, len(t_hypothesis)):
+                t_vec_hyp = t_hypothesis[hypothesis_index]
+
+                h_matrix = np.append(z_rot_mat, np.expand_dims(t_vec_hyp.T, axis=1), axis=1)
+                h_matrix = np.append(h_matrix, np.expand_dims(np.array([0, 0, 0, 1]).T, axis=0), axis=0)
+
+                transformed_train_points = np.matmul(
+                    np.append(np.reshape(match_distance_filter.close_train_points, (n_proximal_matches, 2)),
+                              np.ones((n_proximal_matches, 2)), axis=1),
+                    h_matrix)
+
+                # Calculate rmse of hypothesis with all peripheral points
+                error = transformed_train_points[:, 0:2] - np.reshape(
+                    match_distance_filter.close_query_points, (n_proximal_matches, 2))
+                t_hypothesis_rmse[hypothesis_index] = np.sum(np.sqrt(np.sum(np.power(error, 2), axis=1)))
+
+            # t_vec = np.matmul(np.linalg.inv(self.camera_K), t_hypothesis[np.argmin(t_hypothesis_rmse)])
+            # z_rot_mat = np.matmul(np.linalg.inv(self.camera_K), z_rot_mat)
 
             """
             # Extract essential matrix
@@ -274,7 +304,7 @@ class VisualOdometry:
             rot_sign = np.sign(np.average(matched_query_points - matched_train_points, axis=0)[0])
 
             # Stream points used for essential matrix calculation for debugging
-            if parameters.plot_images:
+            if parameters.plot_matches:
                 processed_data_plotter.plot_point_correspondances(
                     distant_query_matches, distant_train_matches, proximity_mask)
                     #matched_train_points, matched_query_points, proximity_mask)
@@ -329,7 +359,7 @@ class VisualOdometry:
             if abs(self.joy_command.v) < 0.01:
                 t_vec = np.array([0.0, 0.0, 0.0], dtype=float)
 
-            t_vec = np.multiply(np.squeeze(t_vec), np.array([1.0 / 30, 0, 0]))
+            # t_vec = np.multiply(np.squeeze(t_vec), np.array([1, 0, 0]))
             t = TransformStamped()
             t.header.frame_id = "world"
             t.child_frame_id = "axis"
@@ -380,12 +410,12 @@ class VisualOdometry:
             self.path_publisher.publish(self.path)
 
             end = time.time()
-            rospy.loginfo("TIME: RANSAC homography done. Elapsed time: %s", end - start)
+            rospy.logwarn("TIME: RANSAC homography done. Elapsed time: %s", end - start)
 
         except AssertionError as e:
             rospy.logerr(e)
             raise
         except Exception as e:
             rospy.logerr(e)
-            rospy.loginfo("Not enough matches for RANSAC homography")
+            rospy.logwarn("Not enough matches for RANSAC homography")
             raise

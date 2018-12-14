@@ -19,6 +19,23 @@ class HistogramLogicFilter:
         self.length_threshold = None
 
     def fit_gaussian(self, match_vector, kp1, kp2, angle_threshold, length_threshold):
+        """
+        Fits a gaussian function to the length and angle distributions of keypoint matches between two images. Saves the
+        results in a HistogramManager class type
+
+        :param match_vector: array of match pairs (point in image 1 vs point in image 2)
+        :type match_vector: ndarray (nx2)
+        :param kp1: array of 2D keypoints of train image
+        :type kp1: ndarray(nx2)
+        :param kp2: array of 2D keypoints of query image
+        :type kp2: ndarray(nx2)
+        :param angle_threshold: threshold (in terms of standard deviations) used to determine an inlier of the angle
+        distribution
+        :type angle_threshold: (positive) float
+        :param length_threshold: threshold (in terms of standard deviations) used to determine an inlier of the length
+        distribution
+        :type length_threshold: (positive) float
+        """
 
         self.match_vector = match_vector
         self.angle_threshold = angle_threshold
@@ -69,3 +86,57 @@ class RansacFilter:
             data_plotter.plot_ransac_homography(match_vector, h_matrix, matches_mask)
 
         return h_matrix
+
+
+class DistanceFilter:
+    def __init__(self, query_points, train_points, camera_K, image_shape):
+        """
+        Class for processing matches based on their position with respect to the camera. Points are assumed to match
+        in the same order than they appear in their vectors
+
+        :param query_points: array of 2D keypoints of train image
+        :type query_points: ndarray(nx2)
+        :param train_points: array of 2D keypoints of query image
+        :type train_points: ndarray(nx2)
+        :param camera_K: camera intrinsic calibration matrix
+        :type camera_K: ndarray(3x3)
+        :param image_shape: shape of images (height, width)
+        :type image_shape: tuple(2,1)
+        """
+        self.query_points = query_points
+        self.train_points = train_points
+        self.camera_K = camera_K
+        self.image_shape = image_shape
+
+        self.close_query_points = []
+        self.close_train_points = []
+        self.distant_query_points = []
+        self.distant_train_points = []
+
+    def split_by_distance(self, proximity_mask):
+        """
+        Separates the matches in two categories depending on whether they lie inside the provided mask or not
+
+        :param proximity_mask: Boolean mask identifying the close region to the camera view. Must have same size as
+        original images
+        :type proximity_mask: Boolean ndarray
+        """
+
+        assert proximity_mask.shape[0:2] == self.image_shape
+
+        # Get far/close-region matches
+        for query_point, train_point in zip(self.query_points, self.train_points):
+
+            # Transform points to homogeneous coordinate system
+            query_point = np.append([query_point], [1])
+            train_point = np.append([train_point], [1])
+
+            if not proximity_mask[int(query_point[1]), int(query_point[0])] and \
+                    not proximity_mask[int(train_point[1]), int(train_point[0])]:
+                self.distant_query_points.append(np.matmul(np.linalg.inv(self.camera_K), query_point)[0:2])
+                self.distant_train_points.append(np.matmul(np.linalg.inv(self.camera_K), train_point)[0:2])
+            else:
+                self.close_query_points.append(query_point[0:2] * [1 / self.image_shape[1], 1 / self.image_shape[0]])
+                self.close_train_points.append(train_point[0:2] * [1 / self.image_shape[1], 1 / self.image_shape[0]])
+                # proximal_query_matches.append(np.matmul(np.linalg.inv(self.camera_K), query_point)[0:2])
+                # proximal_train_matches.append(np.matmul(np.linalg.inv(self.camera_K), train_point)[0:2])

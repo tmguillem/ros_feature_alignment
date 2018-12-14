@@ -20,6 +20,7 @@ class DataPlotter:
         self.query_image_manager = query_image
         self.image_bridge = CvBridge()
         self.ransac_publisher = rospy.Publisher("ransac_homography", Image, queue_size=2)
+        self.histogram_filter_publisher = rospy.Publisher("histogram_filtering", Image, queue_size=2)
         self.match_publisher = rospy.Publisher("matches", Image, queue_size=2)
 
     def plot_histogram_filtering(self, good_matches, best_matches, histogram_filter, weight, fitness):
@@ -49,44 +50,54 @@ class DataPlotter:
         angle_th = histogram_filter.angle_threshold
         length_th = histogram_filter.length_threshold
 
-        plt.figure(figsize=(20, 16))
+        fig = Figure(figsize=(20, 16))
+        canvas = FigureCanvas(figure=fig)
+        ax = fig.gca()
 
         # Initial matches (filtered by weight)
-        plt.subplot2grid((2, 4), (0, 0), colspan=3)
+        ax.subplot2grid((2, 4), (0, 0), colspan=3)
         img3 = cv2.drawMatches(img1, kp1, img2, kp2, good_matches, None, flags=2)
-        plt.imshow(img3)
-        plt.title('Unfiltered matches. Weight: {0}, Fitness: {1}'.format(weight, fitness))
+        ax.imshow(img3)
+        ax.title('Unfiltered matches. Weight: {0}, Fitness: {1}'.format(weight, fitness))
 
-        plt.subplot2grid((2, 4), (1, 0), colspan=3)
+        ax.subplot2grid((2, 4), (1, 0), colspan=3)
         img3 = cv2.drawMatches(img1, kp1, img2, kp2, best_matches, None, flags=2)
-        plt.imshow(img3)
-        plt.title('Filtered matches')
+        ax.imshow(img3)
+        ax.title('Filtered matches')
 
-        plt.subplot(2, 4, 4)
-        plt.hist(angle_hist.data, bins=angle_hist.bins, label='Test data', color='b')
+        ax.subplot(2, 4, 4)
+        ax.hist(angle_hist.data, bins=angle_hist.bins, label='Test data', color='b')
         hist_fit_angle = gauss(angle_hist.bin_centres, *angle_hist.fitted_gauss_coefficients)
-        plt.bar([angle_hist.fitted_gauss_coefficients[1] - angle_th * angle_hist.fitted_gauss_coefficients[2],
-                 angle_hist.fitted_gauss_coefficients[1]] + angle_th / 2 * angle_hist.fitted_gauss_coefficients[2],
-                np.max(angle_hist.histogram), angle_th * angle_hist.fitted_gauss_coefficients[2], alpha=0.4, color='r')
-        plt.plot(angle_hist.bin_centres, hist_fit_angle, label='Fitted data', color='g')
+        ax.bar([angle_hist.fitted_gauss_coefficients[1] - angle_th * angle_hist.fitted_gauss_coefficients[2],
+                angle_hist.fitted_gauss_coefficients[1]] + angle_th / 2 * angle_hist.fitted_gauss_coefficients[2],
+               np.max(angle_hist.histogram), angle_th * angle_hist.fitted_gauss_coefficients[2], alpha=0.4, color='r')
+        ax.plot(angle_hist.bin_centres, hist_fit_angle, label='Fitted data', color='g')
 
-        plt.axis([np.min(angle_hist.data), np.max(angle_hist.data), 0, np.max(angle_hist.histogram)])
-        plt.title('Angle distribution')
+        ax.axis([np.min(angle_hist.data), np.max(angle_hist.data), 0, np.max(angle_hist.histogram)])
+        ax.title('Angle distribution')
 
-        plt.subplot(2, 4, 8)
-        plt.hist(length_hist.data, bins=length_hist.bins, label='Test data', color='b')
+        ax.subplot(2, 4, 8)
+        ax.hist(length_hist.data, bins=length_hist.bins, label='Test data', color='b')
         hist_fit_length = gauss(length_hist.bin_centres, *length_hist.fitted_gauss_coefficients)
-        plt.bar([length_hist.fitted_gauss_coefficients[1] - length_th * length_hist.fitted_gauss_coefficients[2],
-                 length_hist.fitted_gauss_coefficients[1]] + length_th / 2 * length_hist.fitted_gauss_coefficients[2],
-                np.max(length_hist.histogram), length_th * length_hist.fitted_gauss_coefficients[2], alpha=0.4,
-                color='r')
-        plt.plot(length_hist.bin_centres, hist_fit_length, label='Fitted data', color='g')
+        ax.bar([length_hist.fitted_gauss_coefficients[1] - length_th * length_hist.fitted_gauss_coefficients[2],
+                length_hist.fitted_gauss_coefficients[1]] + length_th / 2 * length_hist.fitted_gauss_coefficients[2],
+               np.max(length_hist.histogram), length_th * length_hist.fitted_gauss_coefficients[2], alpha=0.4,
+               color='r')
+        ax.plot(length_hist.bin_centres, hist_fit_length, label='Fitted data', color='g')
 
-        plt.axis([np.min(length_hist.data), np.max(length_hist.data), 0, np.max(length_hist.histogram)])
-        plt.title('Length distribution')
-        plt.show()
+        ax.axis([np.min(length_hist.data), np.max(length_hist.data), 0, np.max(length_hist.histogram)])
+        ax.title('Length distribution')
 
-    def plot_point_correspondances(self, train_pts, query_pts, proximity_mask):
+        # Render plot as RGB image
+        canvas.draw()
+        img4 = np.fromstring(canvas.tostring_rgb(), dtype=np.uint8, sep='')
+        img4 = img4.reshape(canvas.get_width_height()[::-1] + (3,))
+        subplot_bb = np.round(ax.bbox.extents)
+        img4 = img4[int(subplot_bb[1]):int(subplot_bb[3]), int(subplot_bb[0]):int(subplot_bb[2])]
+
+        self.histogram_filter_publisher.publish(self.image_bridge.cv2_to_imgmsg(img4))
+
+    def plot_point_correspondences(self, train_pts, query_pts, proximity_mask):
         """
         Plots the point correspondences specified by the two input vectors in train and query images respectively
 

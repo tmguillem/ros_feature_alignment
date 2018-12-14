@@ -20,7 +20,10 @@ class AlignmentParameters:
         self.threshold_length = 0
         self.shrink_x_ratio = 0
         self.shrink_y_ratio = 0
-        self.plot_images = False
+
+        self.plot_matches = False
+        self.plot_histogram_filtering = False
+
         self.feature_extractor = 'ORB'
         self.matcher = 'BF'
         self.knn_neighbors = 0
@@ -44,7 +47,8 @@ def define_parameters():
     parameters.shrink_y_ratio = 1 / 2
 
     # Publish debug images
-    parameters.plot_images = True
+    parameters.plot_matches = True
+    parameters.plot_histogram_filtering = False
 
     # Knn weight ratio exploration. Relates how bigger must the first match be wrt the second to be considered a match
     # parameters.histogram_weigh = np.arange(1.9, 1.3, -0.05)
