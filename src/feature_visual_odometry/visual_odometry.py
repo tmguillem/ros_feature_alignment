@@ -227,26 +227,29 @@ class VisualOdometry:
             # Select the best hypothesis using 1 point RANSAC
             for hypothesis_index in range(0, len(rot_hypothesis)):
                 hypothesis = rot_hypothesis[hypothesis_index]
-                rot_mat = np.array([[np.cos(hypothesis), np.sin(hypothesis), 0],
-                                    [-np.sin(hypothesis), np.cos(hypothesis), 0],
-                                    [0, 0, 1]])
+                rot_mat = np.array([[np.cos(hypothesis), 0, np.sin(hypothesis)],
+                                    [0, 1, 0],
+                                    [-np.sin(hypothesis), 0, np.cos(hypothesis)]])
 
                 rotated_train_points = np.matmul(
                     np.append(np.reshape(match_distance_filter.distant_train_points, (n_distant_matches, 2)),
                               np.ones((n_distant_matches, 1)), axis=1),
                     rot_mat)
 
-                # TODO: implement histogram voting?
                 # Calculate rmse of hypothesis with all peripheral points
-                error = rotated_train_points - np.append(
-                    np.reshape(match_distance_filter.distant_query_points, (n_distant_matches, 2)),
-                    np.ones((n_distant_matches, 1)), axis=1)
+                error = rotated_train_points[:, 0:2] - np.reshape(
+                    match_distance_filter.distant_query_points, (n_distant_matches, 2))
 
                 rot_hypothesis_rmse[hypothesis_index] = np.sum(np.sqrt(np.sum(np.power(error, 2), axis=1)))
 
             # TODO: make the scaling adjustable from the features
             theta = rot_hypothesis[np.argmin(rot_hypothesis_rmse)]
-            z_rot_mat = np.array([[np.cos(theta), np.sin(theta), 0], [-np.sin(theta), np.cos(theta), 0], [0, 0, 1]])
+            y_rot_mat = np.array([[np.cos(theta), 0, np.sin(theta)],
+                                  [0, 1, 0],
+                                  [-np.sin(theta), 0, np.cos(theta)]])
+            z_rot_mat = np.array([[np.cos(theta), np.sin(theta), 0],
+                                  [-np.sin(theta), np.cos(theta), 0],
+                                  [0, 0, 1]])
 
             t_vec = [self.joy_command.v / 30.0, 0, 0]
 
@@ -261,7 +264,7 @@ class VisualOdometry:
                 ty = (proximal_t_p[1] - proximal_q_p[1]) * self.joy_command.v
                 tx = (proximal_t_p[0] - proximal_q_p[0]) * self.joy_command.v
 
-                t_hypothesis.append(np.matmul(np.transpose(z_rot_mat), [tx, ty, 0]))
+                t_hypothesis.append(np.matmul(np.transpose(y_rot_mat), [tx, ty, 0]))
 
             t_hypothesis = np.unique(t_hypothesis, axis=0)
             t_hypothesis_rmse = np.zeros((len(t_hypothesis), 1))
@@ -270,7 +273,7 @@ class VisualOdometry:
             for hypothesis_index in range(0, len(t_hypothesis)):
                 t_vec_hyp = t_hypothesis[hypothesis_index]
 
-                h_matrix = np.append(z_rot_mat, np.expand_dims(t_vec_hyp.T, axis=1), axis=1)
+                h_matrix = np.append(y_rot_mat, np.expand_dims(t_vec_hyp.T, axis=1), axis=1)
                 h_matrix = np.append(h_matrix, np.expand_dims(np.array([0, 0, 0, 1]).T, axis=0), axis=0)
 
                 transformed_train_points = np.matmul(
@@ -283,7 +286,7 @@ class VisualOdometry:
                     match_distance_filter.close_query_points, (n_proximal_matches, 2))
                 t_hypothesis_rmse[hypothesis_index] = np.sum(np.sqrt(np.sum(np.power(error, 2), axis=1)))
 
-            # t_vec = np.matmul(np.linalg.inv(self.camera_K), t_hypothesis[np.argmin(t_hypothesis_rmse)])
+            t_vec = t_hypothesis[np.argmin(t_hypothesis_rmse)]
 
             """
             # Extract essential matrix
