@@ -36,8 +36,8 @@ def define_parameters():
     parameters = AlignmentParameters()
 
     # Accepted std deviations from average
-    parameters.angle_th = 1.5  # Angular distribution
-    parameters.length_th = 1.5  # Length distribution
+    parameters.angle_th = 2.5  # Angular distribution
+    parameters.length_th = 1.0  # Length distribution
 
     # Knn neighbors used. Cannot be changed from 2 right now
     parameters.knn_neighbors = 2
@@ -47,7 +47,7 @@ def define_parameters():
     parameters.shrink_y_ratio = 1 / 2
 
     # Publish debug images
-    parameters.plot_matches = False
+    parameters.plot_matches = True
     parameters.plot_histogram_filtering = False
 
     # Knn weight ratio exploration. Relates how bigger must the first match be wrt the second to be considered a match
